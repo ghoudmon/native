@@ -7,7 +7,13 @@ import { useContactsStore } from './contacts-store';
 import { useCalendarStore } from './calendar-store';
 import { useFilterStore } from './filter-store';
 import { generateAccountId } from '../lib/account-utils';
-import { runWebmailHandoff, HandoffCancelledError } from '../lib/oauth';
+import {
+  runOAuthLogin,
+  runDiscoveryLogin,
+  OAuthCancelledError,
+  type OAuthManualConfig,
+  type OAuthTokens,
+} from '../lib/oauth';
 import {
   teardownPushNotifications,
   teardownPushNotificationsForAccount,
@@ -39,8 +45,9 @@ export interface AuthState {
   activeAccountId: string | null;
   client: typeof jmapClient | null;
 
-  login: (serverUrl: string, username: string, password: string, opts?: { addAccount?: boolean }) => Promise<void>;
-  loginViaWebmail: (webmailUrl: string, opts?: { addAccount?: boolean }) => Promise<void>;
+  basicLogin: (serverUrl: string, username: string, password: string, opts?: { addAccount?: boolean }) => Promise<void>;
+  oauthLogin: (config: OAuthManualConfig, opts?: { addAccount?: boolean }) => Promise<void>;
+  discoveryLogin: (email: string, opts?: { addAccount?: boolean }) => Promise<void>;
   logout: () => Promise<void>;
   logoutAll: () => Promise<void>;
   switchAccount: (accountId: string) => Promise<void>;
@@ -97,6 +104,45 @@ function refetchFeatureStores(): void {
   }
 }
 
+// Shared tail for both OAuth flows (manual + discovery). Hands the token
+// bundle to the JMAP client, registers the account, and applies connected
+// state. Caller is responsible for set({ isLoading: true }) and for
+// catching/translating errors.
+async function finishOAuthBootstrap(
+  set: (partial: Partial<AuthState>) => void,
+  get: () => AuthState,
+  jmapServerUrl: string,
+  tokens: OAuthTokens,
+  opts?: { addAccount?: boolean },
+): Promise<void> {
+  if (opts?.addAccount && get().isAuthenticated) {
+    jmapClient.reset();
+    useContactsStore.getState().reset();
+    useCalendarStore.getState().reset();
+  }
+
+  const { session, username, accountId } = await jmapClient.connectWithOAuth(
+    jmapServerUrl,
+    tokens,
+  );
+
+  const serverUrl = jmapServerUrl.replace(/\/+$/, '');
+  const accountStore = useAccountStore.getState();
+  accountStore.addAccount({
+    serverUrl,
+    username,
+    displayName: username,
+    email: username,
+    lastLoginAt: Date.now(),
+    isConnected: true,
+    hasError: false,
+  });
+  accountStore.setActiveAccount(accountId);
+  useEmailStore.getState().setActiveAccount(accountId);
+
+  applyConnectedState(set, session, serverUrl, username, accountId);
+}
+
 function applyConnectedState(
   set: (partial: Partial<AuthState>) => void,
   session: JMAPSession,
@@ -130,7 +176,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   activeAccountId: null,
   client: null,
 
-  login: async (serverUrl, username, password, opts) => {
+  basicLogin: async (serverUrl, username, password, opts) => {
     set({ isLoading: true, error: null });
     try {
       // Adding an additional account - snapshot the current account away so
@@ -172,66 +218,43 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
   },
 
-  loginViaWebmail: async (webmailUrl, opts) => {
+  oauthLogin: async (config, opts) => {
     set({ isLoading: true, error: null });
-    let result;
     try {
-      result = await runWebmailHandoff(webmailUrl);
+      const { tokens, jmapServerUrl } = await runOAuthLogin(config);
+      await finishOAuthBootstrap(set, get, jmapServerUrl, tokens, opts);
     } catch (err) {
-      if (err instanceof HandoffCancelledError) {
-        // User closed the browser tab — quiet exit, no error banner.
+      if (err instanceof OAuthCancelledError) {
         set({ isLoading: false, error: null });
         return;
       }
-      const message = err instanceof Error ? err.message : 'Sign-in failed';
-      set({ isLoading: false, error: message });
-      throw err;
-    }
-
-    if (result.flow === 'password') {
-      // Hand the credentials to the existing password login path so account
-      // registration + feature-store wiring all behave identically to a
-      // manual sign-in.
-      await get().login(result.serverUrl, result.username, result.password, opts);
-      return;
-    }
-
-    // OAuth — the webmail did the dance against Stalwart and handed us a
-    // token bundle. Bootstrap the JMAP session with Bearer auth and let
-    // ensure/forceRefreshToken keep it alive going forward.
-    try {
-      if (opts?.addAccount && get().isAuthenticated) {
-        jmapClient.reset();
-        useContactsStore.getState().reset();
-        useCalendarStore.getState().reset();
-      }
-
-      const { session, username, accountId } = await jmapClient.connectWithOAuth(
-        result.serverUrl,
-        result.tokens,
-      );
-
-      const accountStore = useAccountStore.getState();
-      accountStore.addAccount({
-        serverUrl: result.serverUrl.replace(/\/+$/, ''),
-        username,
-        displayName: username,
-        email: username,
-        lastLoginAt: Date.now(),
-        isConnected: true,
-        hasError: false,
-      });
-      accountStore.setActiveAccount(accountId);
-      useEmailStore.getState().setActiveAccount(accountId);
-
-      applyConnectedState(set, session, result.serverUrl.replace(/\/+$/, ''), username, accountId);
-    } catch (err) {
       const message =
         err instanceof AuthenticationError
           ? 'Authentication rejected by server'
           : err instanceof Error
             ? err.message
             : 'OAuth sign-in failed';
+      set({ isLoading: false, error: message });
+      throw err;
+    }
+  },
+
+  discoveryLogin: async (email, opts) => {
+    set({ isLoading: true, error: null });
+    try {
+      const { tokens, jmapServerUrl } = await runDiscoveryLogin(email);
+      await finishOAuthBootstrap(set, get, jmapServerUrl, tokens, opts);
+    } catch (err) {
+      if (err instanceof OAuthCancelledError) {
+        set({ isLoading: false, error: null });
+        return;
+      }
+      const message =
+        err instanceof AuthenticationError
+          ? 'Authentication rejected by server'
+          : err instanceof Error
+            ? err.message
+            : 'Sign-in failed';
       set({ isLoading: false, error: message });
       throw err;
     }
