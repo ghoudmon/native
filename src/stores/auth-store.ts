@@ -7,7 +7,17 @@ import { useContactsStore } from './contacts-store';
 import { useCalendarStore } from './calendar-store';
 import { useFilterStore } from './filter-store';
 import { generateAccountId } from '../lib/account-utils';
-import { runWebmailHandoff, redeemPairingCode, HandoffCancelledError, type HandoffResult } from '../lib/oauth';
+import {
+  runOAuthLogin,
+  runWebmailHandoff, 
+  redeemPairingCode,
+  runDiscoveryLogin,
+  HandoffCancelledError,
+  OAuthCancelledError,
+  type OAuthManualConfig,
+  type OAuthTokens,
+  type HandoffResult 
+} from '../lib/oauth';
 import {
   teardownPushNotifications,
   teardownPushNotificationsForAccount,
@@ -42,6 +52,9 @@ export interface AuthState {
   login: (serverUrl: string, username: string, password: string, opts?: { addAccount?: boolean }) => Promise<void>;
   loginViaWebmail: (webmailUrl: string, opts?: { addAccount?: boolean }) => Promise<void>;
   loginViaPairing: (webmailUrl: string, code: string, opts?: { addAccount?: boolean }) => Promise<void>;
+  basicLogin: (serverUrl: string, username: string, password: string, opts?: { addAccount?: boolean }) => Promise<void>;
+  oauthLogin: (config: OAuthManualConfig, opts?: { addAccount?: boolean }) => Promise<void>;
+  discoveryLogin: (email: string, opts?: { addAccount?: boolean }) => Promise<void>;
   logout: () => Promise<void>;
   logoutAll: () => Promise<void>;
   switchAccount: (accountId: string) => Promise<void>;
@@ -168,7 +181,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   activeAccountId: null,
   client: null,
 
-  login: async (serverUrl, username, password, opts) => {
+  basicLogin: async (serverUrl, username, password, opts) => {
     set({ isLoading: true, error: null });
     try {
       // Adding an additional account - snapshot the current account away so
@@ -205,6 +218,27 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         : err instanceof Error
           ? err.message
           : 'Connection failed';
+      set({ isLoading: false, error: message });
+      throw err;
+    }
+  },
+
+  oauthLogin: async (config, opts) => {
+    set({ isLoading: true, error: null });
+    try {
+      const result = await runOAuthLogin(config);
+      await completeOAuthHandoff(set, get, result, opts);
+    } catch (err) {
+      if (err instanceof OAuthCancelledError) {
+        set({ isLoading: false, error: null });
+        return;
+      }
+      const message =
+        err instanceof AuthenticationError
+          ? 'Authentication rejected by server'
+          : err instanceof Error
+            ? err.message
+            : 'OAuth sign-in failed';
       set({ isLoading: false, error: message });
       throw err;
     }
@@ -250,7 +284,27 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       throw err;
     }
   },
-
+  
+  discoveryLogin: async (email, opts) => {
+    set({ isLoading: true, error: null });
+    try {
+      const result = await runDiscoveryLogin(email);
+      await completeOAuthHandoff(set, get, result, opts);
+    } catch (err) {
+      if (err instanceof OAuthCancelledError) {
+        set({ isLoading: false, error: null });
+        return;
+      }
+      const message =
+        err instanceof AuthenticationError
+          ? 'Authentication rejected by server'
+          : err instanceof Error
+            ? err.message
+            : 'Sign-in failed';
+      set({ isLoading: false, error: message });
+      throw err;
+    }
+  },
   loginViaPairing: async (webmailUrl, code, opts) => {
     set({ isLoading: true, error: null });
     let result;
@@ -282,7 +336,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       throw err;
     }
   },
-
   logout: async () => {
     const accountStore = useAccountStore.getState();
     const currentId = get().activeAccountId;
