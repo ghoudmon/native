@@ -47,7 +47,7 @@ export class Sha256 {
     }
   }
 
-  digestHex(): string {
+  digestBytes(): Uint8Array {
     // Final block: append 0x80, pad with zeros, then 8-byte big-endian length.
     const totalBits = this.byteCount * 8;
     this.buffer[this.bufferLen++] = 0x80;
@@ -71,9 +71,21 @@ export class Sha256 {
     this.buffer[63] = lo & 0xff;
     this.process(this.buffer);
 
-    let out = '';
+    const out = new Uint8Array(32);
     for (let i = 0; i < 8; i++) {
-      out += this.h[i].toString(16).padStart(8, '0');
+      out[i * 4] = (this.h[i] >>> 24) & 0xff;
+      out[i * 4 + 1] = (this.h[i] >>> 16) & 0xff;
+      out[i * 4 + 2] = (this.h[i] >>> 8) & 0xff;
+      out[i * 4 + 3] = this.h[i] & 0xff;
+    }
+    return out;
+  }
+
+  digestHex(): string {
+    const bytes = this.digestBytes();
+    let out = '';
+    for (let i = 0; i < bytes.length; i++) {
+      out += bytes[i].toString(16).padStart(2, '0');
     }
     return out;
   }
@@ -128,4 +140,10 @@ export function sha256Hex(bytes: Uint8Array): string {
   const h = new Sha256();
   h.update(bytes);
   return h.digestHex();
+}
+
+export function sha256Bytes(bytes: Uint8Array): Uint8Array {
+  const h = new Sha256();
+  h.update(bytes);
+  return h.digestBytes();
 }
