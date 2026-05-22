@@ -10,6 +10,7 @@ class BulwarkFcmPackage : ReactPackage {
         listOf(
             BulwarkFcmModule(reactContext),
             BulwarkClientCertModule(reactContext),
+            BulwarkDnsModule(reactContext),
         )
 
     override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<*, *>> =

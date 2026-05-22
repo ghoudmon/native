@@ -62,12 +62,12 @@ beforeEach(() => {
 });
 
 describe('auth-store', () => {
-  describe('login', () => {
+  describe('basicLogin', () => {
     it('should set authenticated state on success', async () => {
       const session = { apiUrl: 'https://mail.example.com/jmap/' };
       mockConnect.mockResolvedValue(session);
 
-      await useAuthStore.getState().login('https://mail.example.com', 'user', 'pass');
+      await useAuthStore.getState().basicLogin('https://mail.example.com', 'user', 'pass');
 
       const state = useAuthStore.getState();
       expect(state.isAuthenticated).toBe(true);
@@ -82,7 +82,7 @@ describe('auth-store', () => {
       mockConnect.mockRejectedValue(new Error('Connection refused'));
 
       await expect(
-        useAuthStore.getState().login('https://fail.com', 'user', 'pass'),
+        useAuthStore.getState().basicLogin('https://fail.com', 'user', 'pass'),
       ).rejects.toThrow();
 
       const state = useAuthStore.getState();
@@ -96,7 +96,7 @@ describe('auth-store', () => {
       mockConnect.mockRejectedValue(new AuthenticationError('Invalid'));
 
       await expect(
-        useAuthStore.getState().login('https://mail.example.com', 'user', 'bad'),
+        useAuthStore.getState().basicLogin('https://mail.example.com', 'user', 'bad'),
       ).rejects.toThrow();
 
       expect(useAuthStore.getState().error).toBe('Invalid username or password');

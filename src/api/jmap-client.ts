@@ -27,13 +27,15 @@ export interface StoredCredentials {
   username: string;
   password: string;
   accessToken?: string;
-  // OAuth-only — present when credentials came in via the webmail handoff
-  // OAuth path rather than password auth. The token endpoint and client id
-  // are needed for refresh; without them the access token would just expire.
+  // OAuth-only — present when credentials came in via the OAuth flow rather
+  // than password auth. The token endpoint and client id are needed for
+  // refresh; without them the access token would just expire. clientSecret
+  // is only set when a confidential client was registered manually.
   refreshToken?: string;
   expiresAt?: number;
   tokenEndpoint?: string;
   clientId?: string;
+  clientSecret?: string;
 }
 
 export class JMAPClient {
@@ -122,6 +124,7 @@ export class JMAPClient {
       expiresAt: tokens.expiresAt,
       tokenEndpoint: tokens.tokenEndpoint,
       clientId: tokens.clientId,
+      clientSecret: tokens.clientSecret,
     };
 
     this.session = this.rewriteSessionUrls(await this.fetchSession(baseUrl), baseUrl);
@@ -153,6 +156,7 @@ export class JMAPClient {
       expiresAt: next.expiresAt,
       tokenEndpoint: next.tokenEndpoint,
       clientId: next.clientId,
+      clientSecret: next.clientSecret ?? this.credentials.clientSecret,
     };
     const accountId = generateAccountId(
       this.credentials.username,
@@ -179,6 +183,7 @@ export class JMAPClient {
       expiresAt: this.credentials.expiresAt,
       tokenEndpoint: this.credentials.tokenEndpoint,
       clientId: this.credentials.clientId,
+      clientSecret: this.credentials.clientSecret,
     };
   }
 
