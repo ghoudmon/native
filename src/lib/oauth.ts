@@ -19,7 +19,7 @@ import { sha256Bytes } from './sha256';
 export const HANDOFF_REDIRECT_URI = 'bulwarkmobile://auth/callback';
 export const DEFAULT_CLIENT_ID = 'bulwark-android';
 
-const DEFAULT_SCOPES = ['openid', 'offline_access'];
+const DEFAULT_SCOPES = ['openid', 'email', 'profile', 'offline_access'];
 
 export interface OAuthTokens {
   accessToken: string;
@@ -118,6 +118,9 @@ export async function runDiscoveryLogin(email: string): Promise<OAuthLoginResult
   const jmapServerUrl = await discoverJmapServerUrl(domain);
   const metadata = await fetchOAuthMetadata(jmapServerUrl);
 
+  // authenticate with default client id
+  let tokens = await runPkceFlow(metadata, { clientId: DEFAULT_CLIENT_ID, clientSecret: undefined });
+
   // RFC 7591 dynamic registration — best-effort. If it succeeds we use the
   // server-assigned client_id (which may differ from what we asked for);
   // otherwise we fall back to the static identifier baked into the manifest
@@ -126,9 +129,11 @@ export async function runDiscoveryLogin(email: string): Promise<OAuthLoginResult
   let clientSecret: string | undefined;
   if (metadata.registrationEndpoint) {
     try {
-      const registered = await registerClient(metadata.registrationEndpoint);
+      const registered = await registerClient(metadata.registrationEndpoint, tokens);
       clientId = registered.clientId;
       clientSecret = registered.clientSecret;
+      // Renew tokens wtih final client id/client secret
+      tokens = await runPkceFlow(metadata, { clientId, clientSecret });
     } catch {
       // Registration failed (server rejects open registration, network hiccup,
       // etc.) — proceed with the static client_id. If the IdP doesn't know
@@ -136,7 +141,6 @@ export async function runDiscoveryLogin(email: string): Promise<OAuthLoginResult
     }
   }
 
-  const tokens = await runPkceFlow(metadata, { clientId, clientSecret });
   return { tokens, jmapServerUrl };
 }
 
@@ -220,6 +224,7 @@ async function fetchOAuthMetadata(serverUrl: string): Promise<OAuthMetadata> {
 
 async function registerClient(
   registrationEndpoint: string,
+  tokens: OAuthTokens,
 ): Promise<{ clientId: string; clientSecret?: string }> {
   const body = {
     client_name: 'Bulwark Mobile',
@@ -235,6 +240,7 @@ async function registerClient(
     headers: {
       'Content-Type': 'application/json',
       Accept: 'application/json',
+      'Authorization': `Bearer ${tokens.accessToken}`,
     },
     body: JSON.stringify(body),
   });
