@@ -13,9 +13,7 @@ import {
   redeemPairingCode,
   runDiscoveryLogin,
   HandoffCancelledError,
-  OAuthCancelledError,
   type OAuthManualConfig,
-  type OAuthTokens,
   type HandoffResult 
 } from '../lib/oauth';
 import {
@@ -169,7 +167,7 @@ function applyConnectedState(
   });
 }
 
-export const useAuthStore = create<AuthState>((set, get) => ({
+export const useAuthStore = create<AuthState>((set: (partial: Partial<AuthState>) => void, get: () => AuthState) => ({
   isAuthenticated: false,
   isLoading: false,
   hasRestoredSession: false,
@@ -181,7 +179,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   activeAccountId: null,
   client: null,
 
-  basicLogin: async (serverUrl, username, password, opts) => {
+  basicLogin: async (serverUrl: string, username: string, password: string, opts?:  { addAccount?: boolean }) => {
     set({ isLoading: true, error: null });
     try {
       // Adding an additional account - snapshot the current account away so
@@ -223,13 +221,17 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
   },
 
-  oauthLogin: async (config, opts) => {
+  oauthLogin: async (config: OAuthManualConfig, opts?:  { addAccount?: boolean }) => {
     set({ isLoading: true, error: null });
     try {
       const result = await runOAuthLogin(config);
+      if (result.flow !== 'oauth') {
+        set({ isLoading: false, error: 'Unexpected response from OAuth login' });
+        throw new Error('Unexpected response from OAuth login');
+      }
       await completeOAuthHandoff(set, get, result, opts);
     } catch (err) {
-      if (err instanceof OAuthCancelledError) {
+      if (err instanceof HandoffCancelledError) {
         set({ isLoading: false, error: null });
         return;
       }
@@ -244,7 +246,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
   },
 
-  loginViaWebmail: async (webmailUrl, opts) => {
+  loginViaWebmail: async (webmailUrl: string, opts?:  { addAccount?: boolean }) => {
     set({ isLoading: true, error: null });
     let result;
     try {
@@ -285,13 +287,17 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
   },
   
-  discoveryLogin: async (email, opts) => {
+  discoveryLogin: async (email: string, opts?:  { addAccount?: boolean }) => {
     set({ isLoading: true, error: null });
     try {
       const result = await runDiscoveryLogin(email);
+      if (result.flow !== 'oauth') {
+        set({ isLoading: false, error: 'Unexpected response from discovery login' });
+        throw new Error('Unexpected response from discovery login');
+      }
       await completeOAuthHandoff(set, get, result, opts);
     } catch (err) {
-      if (err instanceof OAuthCancelledError) {
+      if (err instanceof HandoffCancelledError) {
         set({ isLoading: false, error: null });
         return;
       }
@@ -305,7 +311,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       throw err;
     }
   },
-  loginViaPairing: async (webmailUrl, code, opts) => {
+  loginViaPairing: async (webmailUrl: string, code: string, opts?:  { addAccount?: boolean }) => {
     set({ isLoading: true, error: null });
     let result;
     try {
@@ -410,7 +416,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     });
   },
 
-  switchAccount: async (accountId) => {
+  switchAccount: async (accountId: string) => {
     if (get().activeAccountId === accountId) return;
 
     const accountStore = useAccountStore.getState();
