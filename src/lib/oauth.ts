@@ -38,11 +38,6 @@ export interface OAuthMetadata {
   scopesSupported?: string[];
 }
 
-export interface OAuthLoginResult {
-  tokens: OAuthTokens;
-  jmapServerUrl: string;
-}
-
 export interface OAuthManualConfig {
   jmapServerUrl: string;
   issuerUrl: string;
@@ -50,13 +45,25 @@ export interface OAuthManualConfig {
   clientSecret?: string;
 }
 
-export class OAuthError extends Error {}
-export class OAuthCancelledError extends OAuthError {
+export type HandoffResult =
+  | {
+      flow: 'password';
+      serverUrl: string;
+      username: string;
+      password: string;
+    }
+  | {
+      flow: 'oauth';
+      serverUrl: string;
+      tokens: OAuthTokens;
+    };
+
+export class HandoffError extends Error {}
+export class HandoffCancelledError extends HandoffError {
   constructor() {
     super('Sign-in cancelled');
   }
 }
-export class DiscoveryError extends Error {}
 
 // ── refresh ────────────────────────────────────────────────────
 
@@ -226,7 +233,7 @@ export async function redeemPairingCode(webmailUrl: string, code: string): Promi
 // persist it.
 export async function refreshOAuthAccessToken(tokens: OAuthTokens): Promise<OAuthTokens> {
   if (!tokens.refreshToken) {
-    throw new OAuthError('No refresh token available');
+    throw new HandoffError('No refresh token available');
   }
   const body = new URLSearchParams({
     grant_type: 'refresh_token',
@@ -243,7 +250,7 @@ export async function refreshOAuthAccessToken(tokens: OAuthTokens): Promise<OAut
     body: body.toString(),
   });
   if (!response.ok) {
-    throw new OAuthError(`Token refresh failed: ${response.status}`);
+    throw new HandoffError(`Token refresh failed: ${response.status}`);
   }
   const data = (await response.json()) as {
     access_token?: string;
@@ -251,7 +258,7 @@ export async function refreshOAuthAccessToken(tokens: OAuthTokens): Promise<OAut
     expires_in?: number;
   };
   if (!data.access_token) {
-    throw new OAuthError('Token refresh response missing access_token');
+    throw new HandoffError('Token refresh response missing access_token');
   }
   return {
     accessToken: data.access_token,
@@ -281,7 +288,7 @@ export async function runOAuthLogin(cfg: OAuthManualConfig): Promise<HandoffResu
 
 export async function runDiscoveryLogin(email: string): Promise<HandoffResult> {
   const domain = extractEmailDomain(email);
-  if (!domain) throw new DiscoveryError('Could not parse email domain');
+  if (!domain) throw new HandoffError('Could not parse email domain');
 
   const jmapServerUrl = await discoverJmapServerUrl(domain);
   const metadata = await fetchOAuthMetadata(jmapServerUrl);
@@ -309,7 +316,6 @@ export async function runDiscoveryLogin(email: string): Promise<HandoffResult> {
     }
   }
 
-  const tokens = await runPkceFlow(metadata, { clientId, clientSecret });
   return { 
     flow: 'oauth',
     serverUrl: trimTrailingSlash(jmapServerUrl),    
@@ -331,16 +337,16 @@ async function discoverJmapServerUrl(domain: string): Promise<string> {
     records = await resolveSrv(`_jmap._tcp.${domain}`);
   } catch (err) {
     if (err instanceof DnsUnsupportedError) {
-      throw new DiscoveryError(
+      throw new HandoffError(
         'DNS auto-discovery is not supported on this device — use advanced settings',
       );
     }
-    throw new DiscoveryError(
+    throw new HandoffError(
       err instanceof Error ? err.message : 'DNS lookup failed',
     );
   }
   const pick = pickSrvTarget(records);
-  if (!pick) throw new DiscoveryError(`No JMAP service published for ${domain}`);
+  if (!pick) throw new HandoffError(`No JMAP service published for ${domain}`);
   const host = pick.target.replace(/\.$/, '');
   const port = pick.port === 443 ? '' : `:${pick.port}`;
   return `https://${host}${port}`;
@@ -359,7 +365,7 @@ async function fetchOAuthMetadata(serverUrl: string): Promise<OAuthMetadata> {
         headers: { Accept: 'application/json' },
       });
       if (!response.ok) {
-        lastError = new DiscoveryError(`${url} returned ${response.status}`);
+        lastError = new HandoffError(`${url} returned ${response.status}`);
         continue;
       }
       const data = (await response.json()) as Record<string, unknown>;
@@ -368,7 +374,7 @@ async function fetchOAuthMetadata(serverUrl: string): Promise<OAuthMetadata> {
         : null;
       const token = typeof data.token_endpoint === 'string' ? data.token_endpoint : null;
       if (!authorization || !token) {
-        lastError = new DiscoveryError(`${url} missing required endpoints`);
+        lastError = new HandoffError(`${url} missing required endpoints`);
         continue;
       }
       const scopes = Array.isArray(data.scopes_supported)
@@ -388,7 +394,7 @@ async function fetchOAuthMetadata(serverUrl: string): Promise<OAuthMetadata> {
       lastError = err;
     }
   }
-  throw new DiscoveryError(
+  throw new HandoffError(
     lastError instanceof Error
       ? `OAuth discovery failed: ${lastError.message}`
       : 'OAuth discovery failed',
@@ -418,14 +424,14 @@ async function registerClient(
     body: JSON.stringify(body),
   });
   if (!response.ok) {
-    throw new OAuthError(`Dynamic registration failed: ${response.status}`);
+    throw new HandoffError(`Dynamic registration failed: ${response.status}`);
   }
   const data = (await response.json()) as {
     client_id?: string;
     client_secret?: string;
   };
   if (!data.client_id) {
-    throw new OAuthError('Registration response missing client_id');
+    throw new HandoffError('Registration response missing client_id');
   }
   return { clientId: data.client_id, clientSecret: data.client_secret };
 }
@@ -458,23 +464,23 @@ async function runPkceFlow(
 
   const result = await WebBrowser.openAuthSessionAsync(authUrl, HANDOFF_REDIRECT_URI);
   if (result.type === 'cancel' || result.type === 'dismiss') {
-    throw new OAuthCancelledError();
+    throw new HandoffCancelledError();
   }
   if (result.type !== 'success' || !result.url) {
-    throw new OAuthError(`Sign-in failed: ${result.type}`);
+    throw new HandoffError(`Sign-in failed: ${result.type}`);
   }
 
   const params = parseCallbackQuery(result.url);
   const err = params.get('error');
   if (err) {
     const desc = params.get('error_description');
-    throw new OAuthError(desc ? `${err}: ${desc}` : err);
+    throw new HandoffError(desc ? `${err}: ${desc}` : err);
   }
   if (params.get('state') !== state) {
-    throw new OAuthError('State mismatch');
+    throw new HandoffError('State mismatch');
   }
   const code = params.get('code');
-  if (!code) throw new OAuthError('Authorization response missing code');
+  if (!code) throw new HandoffError('Authorization response missing code');
 
   return exchangeCodeForTokens(metadata.tokenEndpoint, code, verifier, client);
 }
@@ -502,7 +508,7 @@ async function exchangeCodeForTokens(
     body: body.toString(),
   });
   if (!response.ok) {
-    throw new OAuthError(`Token exchange failed: ${response.status}`);
+    throw new HandoffError(`Token exchange failed: ${response.status}`);
   }
   const data = (await response.json()) as {
     access_token?: string;
@@ -510,7 +516,7 @@ async function exchangeCodeForTokens(
     expires_in?: number;
   };
   if (!data.access_token) {
-    throw new OAuthError('Token response missing access_token');
+    throw new HandoffError('Token response missing access_token');
   }
   return {
     accessToken: data.access_token,
